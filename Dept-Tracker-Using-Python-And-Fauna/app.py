@@ -1,0 +1,106 @@
+from datetime import datetime
+from dateutil import tz
+from flask import *
+from flask_bootstrap import Bootstrap
+from faunadb import query as q
+from faunadb.objects import Ref
+from faunadb.client import FaunaClient
+
+app = Flask(__name__)
+Bootstrap(app)
+app.config["SECRET_KEY"] = "SECRET_KEY"
+client = FaunaClient(secret="YOUR_KEY'S_SECRET_HERE")
+
+
+def faunatimefilter(faunatime):
+    return faunatime.to_datetime().strftime("%A, %B %e, %Y")
+
+
+app.jinja_env.filters["faunatimefilter"] = faunatimefilter
+
+
+@app.route("/")
+def debt():
+    debt = client.query(
+        q.paginate(
+            q.match(q.index("pending-debt"), True),
+            size=100_000
+        )
+    )
+    debt_data = [
+        q.get(
+            q.ref(q.collection("debt"), loan.id())
+        ) for loan in debt["data"]
+    ]
+    return render_template("index.html", debt_data=client.query(debt_data))
+
+
+@app.route("/add/", methods=["POST"])
+def add_loan():
+    name = request.form.get("name")
+    amount = request.form.get("amount")
+    date = request.form.get("date")
+
+    loan_data = client.query(
+        q.create(
+            q.collection("debt"), {
+                "data": {
+                    "name": name,
+                    "amount": float(amount),
+                    "pending": True,
+                    "date_created": datetime.strptime(date, "%Y-%m-%d").astimezone(tz=tz.tzlocal())
+                }
+            }
+        )
+    )
+
+    flash("You have successfully added loan information!", "success")
+    return redirect(url_for("debt"))
+
+
+@app.route("/update/", methods=["POST"])
+def update_loan():
+    action = request.form.get("action")
+    amount = request.form.get("amount")
+    loan_id = request.form.get("loanID")
+
+    loan_data = client.query(
+        q.get(
+            q.ref(q.collection("debt"), int(loan_id))
+        )
+    )
+
+    old_amount = loan_data["data"]["amount"]
+    if action == "Borrow More":
+        new_amount = old_amount + float(amount)
+    elif action == "Repay Loan":
+        new_amount = old_amount - float(amount)
+
+    client.query(
+        q.update(
+            q.ref(q.collection("debt"), int(loan_id)), {
+                "data": {
+                    "amount": new_amount
+                }
+            }
+        )
+    )
+
+    flash("You have successfully updated loan information!", "success")
+    return redirect(url_for("debt"))
+
+
+@app.route("/clear/<int:loan_id>/")
+def clear_loan(loan_id):
+    client.query(
+        q.delete(
+            q.ref(q.collection("debt"), loan_id)
+        )
+    )
+
+    flash("You have successfully cleared loan information!", "success")
+    return redirect(url_for("debt"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
